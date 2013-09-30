@@ -1,4 +1,4 @@
-HOST: http://example.com/
+HOST: http://ngxcbm.apiary.io/
 
 --- Couchbase NGINX Module ---
 
@@ -15,24 +15,120 @@ There are several terms we are using while describing this API.
     </tr>
     <tr>
         <td>document</td>
-        <td>Arbitrary JSON or BLOB value. It could be referenced by
-        its ID</td>
+        <td>Arbitrary JSON or BLOB value. It could be referenced by its ID</td>
     </tr>
     <tr>
-        <td>bucket</td>
-        <td>The logical storage, which contains the documents. Like
-        <strong>database</strong> in SQL world, or
-        <strong>collection</strong> in mongodb</td>
+        <td>mount point</td>
+        <td>The part of URI which where couchbase nginx module connected</td>
     </tr>
 </table>
-
-Lets assume we have a bucket named `wonderland`.
 ---
 
 --
+Configuration and URIs
+
+The Couchbase API could be mount to any endpoint in your application, and during configuration the bucket name and credentials should be specified like this:
+
+    server {
+        location /wonderland/ {
+            couchbase_pass example.com:8091,example.org bucket=wonderland;
+        }
+        ...
+    }
+
+The config section above tell nginx to use `/wonderland/` mount point to expose Couchbase API.
+
+By default only Document API will be mounted, i.e. only CRUD operations can be executed there. Because in Couchbase itself both Document and Views APIs lives in completely different namespaces, the nginx module also keeps them separate. The example below will mount views and the documents into the common root.
+
+    server {
+        location /wonderland/docs/ {
+            couchbase_pass example.com:8091,example.org bucket=wonderland;
+        }
+        location /wonderland/views/ {
+            couchbase_pass example.com:8091,example.org bucket=wonderland views=true;
+        }
+        ...
+    }
+
+The connection configuration could be shared amound the locations using upstream
+
+    upstream couchbase {
+        couchbase_server example.com:8091;
+        couchbase_server example.org;
+        couchbase_bucket wonderland;
+    }
+
+    server {
+        location /wonderland/docs/ {
+            couchbase_pass couchbase;
+        }
+        location /wonderland/views/ {
+            couchbase_pass views=true;
+        }
+        ...
+    }
+--
+
+--
 Document CRUD
-This section shows how to perform simple Create, Retrieve, Update and
-Delete operations
+
+The module maps basic data operations to HTTP methods. The table below assumes that the bucket mount to `/storage` location:
+
+<table>
+    <tr>
+        <th>Couchbase operation</th>
+        <th>HTTP method</th>
+        <th>Comments</th>
+    </tr>
+    <tr>
+        <td>get "foo"</td>
+        <td>GET /storage/foo</td>
+        <td></td>
+    </tr>
+    <tr>
+        <td>add "foo" "bar"</td>
+        <td>POST /storage/foo</td>
+        <td>document goes in request's body, fails if ID exists already</td>
+    </tr>
+    <tr>
+        <td></td>
+        <td>POST /storage</td>
+        <td>the same as above, but will generate ID</td>
+    </tr>
+    <tr>
+        <td>set "foo" "bar"</td>
+        <td>PUT /storage/foo</td>
+        <td>document goes in request's body</td>
+    </tr>
+    <tr>
+        <td>delete "foo"</td>
+        <td>DELETE /storage/foo</td>
+        <td></td>
+    </tr>
+</table>
+
+Apart from HTTP methods, it is possible to use arguments in query string, to specify the command. To do so, the name of the parameter must be specified in the config:
+
+    server {
+        location /wonderland/ {
+            couchbase_pass example.com:8091,example.org bucket=wonderland;
+            set $couchbase_cmd $arg_cmd
+            set $couchbase_exptime $arg_exptime;
+        }
+        ...
+    }
+
+The snippet above will translate this URI `/storage/foo?cmd=replace&exptime=40` to the `replace "foo" ...` command with expiration of 40 seconds. In the same way can be controller ID, value, flags and expiration time.
+
+The rest of the section demonstrates various example of usage the API, including optimistic locking with CAS. It assumes the following config:
+
+    server {
+        location /wonderland/ {
+            couchbase_pass example.com:8091,example.org bucket=wonderland;
+            add_header ETag $couchbase_cas;
+        }
+        ...
+    }
 --
 
 Create document in the bucket
@@ -40,8 +136,8 @@ POST /wonderland
 > Content-Type: application/json
 {"name":"Alice","species":"human"}
 < 201
-< ETag: "f5b8da2cf1560000"
-< Location: http://couchbasenginx.apiary.io/wonderland/0a4683e4b4b161f505d0c2ae0c3a1abf
+< ETag: 10952782243130507264
+< Location: http://ngxcbm.apiary.io/wonderland/0a4683e4b4b161f505d0c2ae0c3a1abf
 
 
 You can also specify ID with POST request if you need to `create` the
@@ -50,8 +146,8 @@ POST /wonderland/alice
 > Content-Type: application/json
 {"name":"Alice","species":"human"}
 < 201
-< ETag: "f5b8da2cf1570000"
-< Location: http://couchbasenginx.apiary.io/wonderland/alice
+< ETag: 10952782243130507265
+< Location: http://ngxcbm.apiary.io/wonderland/alice
 
 
 Note that when you are using POST request, the server is always
@@ -71,8 +167,8 @@ PUT /wonderland/white-rabbit
 > Content-Type: application/json
 {"name":"Write Rabbit","species":"rabbit"}
 < 204
-< ETag: "3d24e52cf1570000"
-< Location: http://couchbasenginx.apiary.io/wonderland/white-rabbit
+< ETag: 10952782243130507266
+< Location: http://ngxcbm.apiary.io/wonderland/white-rabbit
 
 
 You can also specify `If-Match` header and the server will perform
@@ -101,7 +197,7 @@ PUT /wonderland/sheep
 Removing document from the bucket
 DELETE /wonderland/caterpillar
 < 204
-< ETag: "7f463c2df1570000"
+< ETag: 10952782243130507267
 
 
 You can also specify `If-Match` header if you need to ensure you are removing
@@ -128,7 +224,7 @@ GET /wonderland/hatter
 < 200
 < Content-Type: application/json
 < Content-Length: 36
-< ETag: "5d45c301fc570000"
+< ETag: 10952782243130507268
 {"name":"Hatter","species":"human"}
 
 
@@ -145,7 +241,7 @@ Use `HEAD` request to skip the document body
 HEAD /wonderland/gryphon
 < 200
 < Content-Type: application/json
-< ETag: "55c3a92df1570000"
+< ETag: 10952782243130507269
 
 
 Each operation is carry ETag, which internally is CAS value. The ETag
@@ -155,88 +251,90 @@ value can be used in the conditional requests with `If-Match`,
 Check if the key has been modified (in this case the server responds
 that it wasn't modified):
 HEAD /wonderland/dormouse
-> If-None-Match: "3f5b792df1570000"
+> If-None-Match: 10952782243130507269
 < 304
 
 
 --
 Couchbase Views
+
 This section shows more advanced server feature: View indexes
---
 
-One of the features of the Couchbase is ability to build efficient
-indexes leveraging Map/Reduce. They are called Views and you can
-define them on Admin Console UI.
+One of the features of the Couchbase is ability to build efficient indexes leveraging Map/Reduce. They are called Views and you can define them on Admin Console UI.
 
-This module allows you to query your views proxying them to Couchbase.
-All arguments will be transparently passed to Couchbase and the result
-will be streamed back.
+The module allows you to query your views proxying them to Couchbase.  All arguments will be transparently passed to Couchbase and the result will be streamed back.
 
-For example we have a view `all` defined in the design document
-`characters`. It is simple map which will just emit all known
-characters (without any reduce function):
+As mentioned above, the view endpoint should be mount separately
 
-    function (doc, meta) {
-      emit(meta.id, null);
+    server {
+        location /wonderland/views/ {
+            couchbase_pass example.com:8091,example.org bucket=wonderland views=true;
+        }
+        ...
     }
 
-The result will look like (note: when `id` isn't accessible like for
-reduced views, the `meta` will be missing too)
-GET /wonderland/_design/characters/_view/all
+For example we have a view *all* defined in the design document *characters*. It is simple map which will just emit all known characters (without any reduce function):
+
+    function (doc, meta) {
+      emit(meta.id);
+    }
+
+--
+
+Query view with default settings
+GET /wonderland/views/_design/characters/_view/all
 < 200
 < Transfer-Encoding: chunked
 < Content-Type: application/json
 {"total_rows":20,"rows":[
-{"id":"alice","key":"alice","value":null,"meta":{"etag":"f5b8da2cf1570000"}},
-{"id":"bill-the-lizard","key":"bill-the-lizard","value":null,"meta":{"etag":"accb302df1570000"}},
-{"id":"caterpillar","key":"caterpillar","value":null,"meta":{"etag":"7f463c2df1570000"}},
-{"id":"cheshire-cat","key":"cheshire-cat","value":null,"meta":{"etag":"5b99582df1570000"}},
-{"id":"dodo","key":"dodo","value":null,"meta":{"etag":"2fe2ed2cf1570000"}},
-{"id":"dormouse","key":"dormouse","value":null,"meta":{"etag":"3f5b792df1570000"}},
-{"id":"duchess","key":"duchess","value":null,"meta":{"etag":"a8bc492df1570000"}},
-{"id":"duck","key":"duck","value":null,"meta":{"etag":"e076132df1570000"}},
-{"id":"eaglet","key":"eaglet","value":null,"meta":{"etag":"b9bd062df1570000"}},
-{"id":"gryphon","key":"gryphon","value":null,"meta":{"etag":"55c3a92df1570000"}},
-{"id":"hatter","key":"hatter","value":null,"meta":{"etag":"5d45c301fc570000"}},
-{"id":"king-of-hearts","key":"king-of-hearts","value":null,"meta":{"etag":"4e1c9f2df1570000"}},
-{"id":"knave-of-hearts","key":"knave-of-hearts","value":null,"meta":{"etag":"43fa922df1570000"}},
-{"id":"lory","key":"lory","value":null,"meta":{"etag":"01f6fa2cf1570000"}},
-{"id":"march-hare","key":"march-hare","value":null,"meta":{"etag":"08f6642df1570000"}},
-{"id":"mock-turtle","key":"mock-turtle","value":null,"meta":{"etag":"11a8b52df1570000"}},
-{"id":"mouse","key":"mouse","value":null,"meta":{"etag":"fa38ea2cf1570000"}},
-{"id":"pat","key":"pat","value":null,"meta":{"etag":"8bd71f2df1570000"}},
-{"id":"queen-of-hearts","key":"queen-of-hearts","value":null,"meta":{"etag":"f72c862df1570000"}},
-{"id":"white-rabbit","key":"white-rabbit","value":null,"meta":{"etag":"3d24e52cf1570000"}},
+{"id":"alice","key":"alice","value":null},
+{"id":"bill-the-lizard","key":"bill-the-lizard","value":null},
+{"id":"caterpillar","key":"caterpillar","value":null},
+{"id":"cheshire-cat","key":"cheshire-cat","value":null},
+{"id":"dodo","key":"dodo","value":null},
+{"id":"dormouse","key":"dormouse","value":null},
+{"id":"duchess","key":"duchess","value":null},
+{"id":"duck","key":"duck","value":null},
+{"id":"eaglet","key":"eaglet","value":null},
+{"id":"gryphon","key":"gryphon","value":null},
+{"id":"hatter","key":"hatter","value":null},
+{"id":"king-of-hearts","key":"king-of-hearts","value":null},
+{"id":"knave-of-hearts","key":"knave-of-hearts","value":null},
+{"id":"lory","key":"lory","value":null},
+{"id":"march-hare","key":"march-hare","value":null},
+{"id":"mock-turtle","key":"mock-turtle","value":null},
+{"id":"mouse","key":"mouse","value":null},
+{"id":"pat","key":"pat","value":null},
+{"id":"queen-of-hearts","key":"queen-of-hearts","value":null},
+{"id":"white-rabbit","key":"white-rabbit","value":null}
 ]
 }
 
-
-You can pass the any of supported query parameters, like
-`include_docs=true` for example:
-GET /wonderland/_design/characters/_view/all?include_docs=true
+You can pass the any of supported query parameters, like *include_docs=true* for example (note that {{rev}} field replaced with {{etag}}:
+GET /wonderland/views/_design/characters/_view/all?include_docs=true
 < 200
 < Transfer-Encoding: chunked
 < Content-Type: application/json
 {"total_rows":20,"rows":[
-{"id":"alice","key":"alice","value":null,"meta":{"etag":"f5b8da2cf1570000"},"json":{"name":"Alice","species":"human"}},
-{"id":"bill-the-lizard","key":"bill-the-lizard","value":null,"meta":{"etag":"accb302df1570000"},"json":{"name":"Bill the Lizard","species":"lizard"}},
-{"id":"caterpillar","key":"caterpillar","value":null,"meta":{"etag":"7f463c2df1570000"},"json":{"name":"Caterpillar","species":"caterpillar"}},
-{"id":"cheshire-cat","key":"cheshire-cat","value":null,"meta":{"etag":"5b99582df1570000"},"json":{"name":"Cheshire Cat","species":"cat"}},
-{"id":"dodo","key":"dodo","value":null,"meta":{"etag":"2fe2ed2cf1570000"},"json":{"name":"Dodo","species":"bird"}},
-{"id":"dormouse","key":"dormouse","value":null,"meta":{"etag":"3f5b792df1570000"},"json":{"name":"Dormouse","species":"dormouse"}},
-{"id":"duchess","key":"duchess","value":null,"meta":{"etag":"a8bc492df1570000"},"json":{"name":"Duchess","species":"human"}},
-{"id":"duck","key":"duck","value":null,"meta":{"etag":"e076132df1570000"},"json":{"name":"Duck","species":"bird"}},
-{"id":"eaglet","key":"eaglet","value":null,"meta":{"etag":"b9bd062df1570000"},"json":{"name":"Eaglet","species":"bird"}},
-{"id":"gryphon","key":"gryphon","value":null,"meta":{"etag":"55c3a92df1570000"},"json":{"name":"Gryphon","species":"gryphon"}},
-{"id":"hatter","key":"hatter","value":null,"meta":{"etag":"5d45c301fc570000"},"json":"foo"},
-{"id":"king-of-hearts","key":"king-of-hearts","value":null,"meta":{"etag":"4e1c9f2df1570000"},"json":{"name":"King of Hearts","species":"card"}},
-{"id":"knave-of-hearts","key":"knave-of-hearts","value":null,"meta":{"etag":"43fa922df1570000"},"json":{"name":"Knave of Hearts","species":"card"}},
-{"id":"lory","key":"lory","value":null,"meta":{"etag":"01f6fa2cf1570000"},"json":{"name":"Lory","species":"bird"}},
-{"id":"march-hare","key":"march-hare","value":null,"meta":{"etag":"08f6642df1570000"},"json":{"name":"March Hare","species":"hare"}},
-{"id":"mock-turtle","key":"mock-turtle","value":null,"meta":{"etag":"11a8b52df1570000"},"json":{"name":"Mock Turtle","species":"turtle"}},
-{"id":"mouse","key":"mouse","value":null,"meta":{"etag":"fa38ea2cf1570000"},"json":{"name":"Mouse","species":"mouse"}},
-{"id":"pat","key":"pat","value":null,"meta":{"etag":"8bd71f2df1570000"},"json":{"name":"Pat","species":"pig"}},
-{"id":"queen-of-hearts","key":"queen-of-hearts","value":null,"meta":{"etag":"f72c862df1570000"},"json":{"name":"Queen of Hearts","species":"card"}},
-{"id":"white-rabbit","key":"white-rabbit","value":null,"meta":{"etag":"3d24e52cf1570000"},"json":{"name":"White Rabbit","species":"rabbit"}}
+  {"id":"alice","key":"alice","value":null,"doc":{"meta":{"id":"alice","expiration":0,"flags":0,"etag":88499348547108864},"json":{"name":"Alice","species":"human"}}},
+  {"id":"bill-the-lizard","key":"bill-the-lizard","value":null,"doc":{"meta":{"id":"bill-the-lizard","expiration":0,"flags":0,"etag":12227673967682453504},"json":{"name":"BilltheLizard","species":"lizard"}}},
+  {"id":"caterpillar","key":"caterpillar","value":null,"doc":{"meta":{"id":"caterpillar","expiration":0,"flags":0,"etag":7907600423173816320},"json":{"name":"Caterpillar","species":"caterpillar"}}},
+  {"id":"cheshire-cat","key":"cheshire-cat","value":null,"doc":{"meta":{"id":"cheshire-cat","expiration":0,"flags":0,"etag":15887700786432507904},"json":{"name":"CheshireCat","species":"cat"}}},
+  {"id":"dodo","key":"dodo","value":null,"doc":{"meta":{"id":"dodo","expiration":0,"flags":0,"etag":14764617828380246016},"json":{"name":"Dodo","species":"bird"}}},
+  {"id":"dormouse","key":"dormouse","value":null,"doc":{"meta":{"id":"dormouse","expiration":0,"flags":0,"etag":4027757040775528448},"json":{"name":"Dormouse","species":"dormouse"}}},
+  {"id":"duchess","key":"duchess","value":null,"doc":{"meta":{"id":"duchess","expiration":0,"flags":0,"etag":17543907245979402240},"json":{"name":"Duchess","species":"human"}}},
+  {"id":"duck","key":"duck","value":null,"doc":{"meta":{"id":"duck","expiration":0,"flags":0,"etag":13461959332744724480},"json":{"name":"Duck","species":"bird"}}},
+  {"id":"eaglet","key":"eaglet","value":null,"doc":{"meta":{"id":"eaglet","expiration":0,"flags":0,"etag":8572459711327174656},"json":{"name":"Eaglet","species":"bird"}}},
+  {"id":"gryphon","key":"gryphon","value":null,"doc":{"meta":{"id":"gryphon","expiration":0,"flags":0,"etag":14715372901595414528},"json":{"name":"Gryphon","species":"gryphon"}}},
+  {"id":"hatter","key":"hatter","value":null,"doc":{"meta":{"id":"hatter","expiration":0,"flags":0,"etag":3615690869010661376},"json":{"name":"Hatter","species":"human"}}},
+  {"id":"king-of-hearts","key":"king-of-hearts","value":null,"doc":{"meta":{"id":"king-of-hearts","expiration":0,"flags":0,"etag":6164167507172196352},"json":{"name":"KingofHearts","species":"card"}}},
+  {"id":"knave-of-hearts","key":"knave-of-hearts","value":null,"doc":{"meta":{"id":"knave-of-hearts","expiration":0,"flags":0,"etag":205344449230864384},"json":{"name":"KnaveofHearts","species":"card"}}},
+  {"id":"lory","key":"lory","value":null,"doc":{"meta":{"id":"lory","expiration":0,"flags":0,"etag":13830705845886844928},"json":{"name":"Lory","species":"bird"}}},
+  {"id":"march-hare","key":"march-hare","value":null,"doc":{"meta":{"id":"march-hare","expiration":0,"flags":0,"etag":14847959710254039040},"json":{"name":"MarchHare","species":"hare"}}},
+  {"id":"mock-turtle","key":"mock-turtle","value":null,"doc":{"meta":{"id":"mock-turtle","expiration":0,"flags":0,"etag":211262020811554816},"json":{"name":"MockTurtle","species":"turtle"}}},
+  {"id":"mouse","key":"mouse","value":null,"doc":{"meta":{"id":"mouse","expiration":0,"flags":0,"etag":7144275470706606080},"json":{"name":"Mouse","species":"mouse"}}},
+  {"id":"pat","key":"pat","value":null,"doc":{"meta":{"id":"pat","expiration":0,"flags":0,"etag":89110677012152320},"json":{"name":"Pat","species":"pig"}}},
+  {"id":"queen-of-hearts","key":"queen-of-hearts","value":null,"doc":{"meta":{"id":"queen-of-hearts","expiration":0,"flags":0,"etag":8409231712625688576},"json":{"name":"QueenofHearts","species":"card"}}},
+  {"id":"white-rabbit","key":"white-rabbit","value":null,"doc":{"meta":{"id":"white-rabbit","expiration":0,"flags":0,"etag":14777043409285742592},"json":{"name":"WhiteRabbit","species":"rabbit"}}}
 ]
 }
